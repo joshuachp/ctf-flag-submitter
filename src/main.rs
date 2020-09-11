@@ -1,8 +1,7 @@
 use reqwest;
 use rusqlite::params;
 use std::sync::Arc;
-use std::{thread, time};
-use tokio;
+use tokio::time;
 
 const DB_PATH: &str = "flag.db";
 const SERVER_URL: &str = "<server_url>";
@@ -36,41 +35,47 @@ fn get_unsent_flags(db: &rusqlite::Connection) -> Result<Vec<Arc<Flag>>, rusqlit
         })?
         .map(|x| Arc::new(x.unwrap()))
         .collect();
+    println!("[GET] flags: {:?}", flags);
     Ok(flags)
 }
 
 async fn send_single_flag(flag: Arc<Flag>) -> Result<reqwest::Response, reqwest::Error> {
+    println!("[SEND] flag: {} group: {}", flag.flag, flag.group);
     let client = reqwest::Client::new();
     let parameters = [("team_token", TEAM_TOKEN), ("flag", &flag.flag)];
     let res = client.post(SERVER_URL).form(&parameters).send().await?;
     Ok(res)
 }
 
-fn send_flags_with_throttle(flags: &Vec<Arc<Flag>>) {
-    let sleep_duration = time::Duration::from_secs(1);
-    flags.chunks(FLAGS_PER_SECOND as usize).for_each(|chunk| {
+async fn send_flags_with_throttle(flags: &Vec<Arc<Flag>>) {
+    let mut interval = time::interval(time::Duration::from_secs(1));
+    for chunk in flags.chunks(FLAGS_PER_SECOND as usize) {
+        interval.tick().await;
         for flag in chunk {
             let f = Arc::clone(flag);
-            tokio::task::spawn(async { send_single_flag(f) });
+            println!("Start thread {:?}", f);
+            tokio::task::spawn(async { send_single_flag(f).await });
         }
-        thread::sleep(sleep_duration);
-    });
-}
-
-fn main_loop(db: &rusqlite::Connection) {
-    let sleep_duration = time::Duration::from_secs(SLEEP_TIME as u64);
-    loop {
-        match get_unsent_flags(&db) {
-            Ok(flags) => send_flags_with_throttle(&flags),
-            Err(err) => eprintln!("{}", err),
-        }
-        thread::sleep(sleep_duration);
     }
 }
 
-fn main() -> rusqlite::Result<()> {
+async fn main_loop(db: &rusqlite::Connection) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(SLEEP_TIME as u64));
+    loop {
+        match get_unsent_flags(&db) {
+            Ok(flags) => {
+                send_flags_with_throttle(&flags).await;
+            }
+            Err(err) => eprintln!("{}", err),
+        }
+        interval.tick().await;
+    }
+}
+
+#[tokio::main]
+async fn main() -> rusqlite::Result<()> {
     let db = rusqlite::Connection::open(DB_PATH)?;
     setup(&db)?;
-    main_loop(&db);
+    main_loop(&db).await;
     Ok(())
 }
