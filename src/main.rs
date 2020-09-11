@@ -14,7 +14,7 @@ const FLAG_TABLE: &str = "CREATE TABLE IF NOT EXISTS flags (id INTEGER PRIMARY K
 const SELECT_UNSENT: &str = "SELECT id, flag, group_id, sent FROM flags WHERE sent = 0";
 const UPDATE_SENT: &str = "UPDATE flags SET sent = 1 WHERE id = ?";
 
-#[derive(Debug, Eq, PartialEq, Hash)]
+#[derive(Debug)]
 struct Flag {
     id: i64,
     flag: String,
@@ -40,7 +40,7 @@ fn get_unsent_flags(db: &rusqlite::Connection) -> Result<Vec<Arc<Flag>>, rusqlit
         })?
         .map(|x| Arc::new(x.unwrap()))
         .collect();
-    println!("[GET] flags: {:?}", flags);
+    println!("[DEBUG][GET] flags: {:#?}", flags);
     Ok(flags)
 }
 
