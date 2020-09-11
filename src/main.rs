@@ -25,7 +25,7 @@ fn setup(db: &rusqlite::Connection) -> rusqlite::Result<()> {
 }
 
 fn get_unsent_flags(db: &rusqlite::Connection) -> Result<Vec<Arc<Flag>>, rusqlite::Error> {
-    let mut prepare = db.prepare("SELECT flag, group, sent FROM flags WHERE sent = 0")?;
+    let mut prepare = db.prepare("SELECT flag, group_id, sent FROM flags WHERE sent = 0")?;
     let flags: Vec<Arc<Flag>> = prepare
         .query_map(params![], |row| {
             Ok(Flag {
