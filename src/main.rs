@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use tokio::time;
 
 const DB_PATH: &str = "flag.db";
-const SERVER_URL: &str = "http://localhost";
+const SERVER_URL: &str = "<server_url>";
 const TEAM_TOKEN: &str = "<team_token>";
 const SLEEP_TIME: u8 = 10;
 const FLAGS_PER_SECOND: u8 = 25;
@@ -57,26 +57,41 @@ async fn send_single_flag(flag: &Flag) -> Result<reqwest::Response, reqwest::Err
     Ok(res)
 }
 
-fn check_response(_res: reqwest::Response) -> bool {
-    // TODO: Check response
+async fn check_response(res: reqwest::Response) -> bool {
+    if res.status().is_success() {
+        match res.text().await {
+            Ok(text) => {
+                return !text.contains("invalid");
+            }
+            Err(err) => {
+                eprintln!("[ERROR][CHECK] {}", err);
+            }
+        }
+    } else {
+        eprintln!(
+            "[ERROR][CHECK] Response not successful, status code {}",
+            res.status()
+        );
+    }
     false
 }
 
 async fn send_flags_with_throttle(
-    db: &Arc<Mutex<rusqlite::Connection>>,
     sent_set: &Arc<Mutex<HashSet<i64>>>,
     flags: &Vec<Arc<Flag>>,
-) {
+) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut joins: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(flags.len());
     let mut interval = time::interval(time::Duration::from_secs(1));
+
     for chunk in flags.chunks(FLAGS_PER_SECOND as usize) {
         interval.tick().await;
         for flag in chunk {
             let sent_set = Arc::clone(sent_set);
             let flag = Arc::clone(flag);
-            tokio::task::spawn(async move {
+            let join = tokio::task::spawn(async move {
                 match send_single_flag(&flag).await {
                     Ok(res) => {
-                        if check_response(res) {
+                        if check_response(res).await {
                             let mut hash_set = sent_set.lock().unwrap();
                             hash_set.insert(flag.id);
                         }
@@ -84,25 +99,32 @@ async fn send_flags_with_throttle(
                     Err(err) => eprintln!("[ERROR][SEND] {}", err),
                 }
             });
+            joins.push(join);
         }
     }
-    let mut hash_set = sent_set.lock().unwrap();
-    let db = db.lock().unwrap();
-    for id in hash_set.drain() {
-        if let Err(err) = set_sent_flags(&db, id) {
-            eprintln!("[ERROR][SET] {}", err);
-        }
-    }
+    // Return join for the tasks
+    joins
 }
 
-async fn main_loop(db: &Arc<Mutex<rusqlite::Connection>>, sent_set: &Arc<Mutex<HashSet<i64>>>) {
+async fn main_loop(db: &rusqlite::Connection, sent_set: &Arc<Mutex<HashSet<i64>>>) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(SLEEP_TIME as u64));
     loop {
-        match get_unsent_flags(&db.lock().unwrap()) {
+        match get_unsent_flags(db) {
             Ok(flags) => {
-                send_flags_with_throttle(db, sent_set, &flags).await;
+                let joins = send_flags_with_throttle(sent_set, &flags).await;
+                for join in joins {
+                    if let Err(err) = join.await {
+                        eprintln!("[ERROR][JOIN] {}", err);
+                    }
+                }
             }
             Err(err) => eprintln!("[ERROR][GET] {}", err),
+        }
+        let mut hash_set = sent_set.lock().unwrap();
+        for id in hash_set.drain() {
+            if let Err(err) = set_sent_flags(db, id) {
+                eprintln!("[ERROR][SET] {}", err);
+            }
         }
         interval.tick().await;
     }
@@ -110,9 +132,9 @@ async fn main_loop(db: &Arc<Mutex<rusqlite::Connection>>, sent_set: &Arc<Mutex<H
 
 #[tokio::main]
 async fn main() -> rusqlite::Result<()> {
-    let db = Arc::new(Mutex::new(rusqlite::Connection::open(DB_PATH)?));
+    let db = rusqlite::Connection::open(DB_PATH)?;
     let sent_set: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
-    setup(&db.lock().unwrap())?;
+    setup(&db)?;
     main_loop(&db, &sent_set).await;
     Ok(())
 }
