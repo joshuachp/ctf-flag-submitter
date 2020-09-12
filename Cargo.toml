@@ -3,9 +3,11 @@ name = "flag-submitter"
 version = "0.1.0"
 authors = ["Joshua Chapman <joshua.samuel.chapman@protonmail.com>"]
 edition = "2018"
-license = "MIT OR Apache-2.0"
+description="Automatic Flag sumbitter for ctf challenges like CTF Forge, with throttle and quota limits."
+license = "MIT"
 
 [dependencies]
+clap = "2.33"
 reqwest = "0.10"
 rusqlite = "0.24"
 tokio = { version = "0.2", features = ["full"] }
