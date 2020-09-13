@@ -225,6 +225,7 @@ async fn send_flags_with_throttle(
                         // If flag was sent successfully we add it to the set to
                         // be set as sent afterwards
                         if check_response(res).await {
+                            println!("[SENT] Flag sent flag: {} group: {}", flag.flag, flag.group);
                             let mut hash_set = sent_set.lock().unwrap();
                             hash_set.insert(flag.id);
                         }
