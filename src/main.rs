@@ -11,7 +11,9 @@ use tokio::time::{interval, Duration};
 use toml;
 
 // Table
-const FLAG_TABLE: &str = "CREATE TABLE IF NOT EXISTS flags (id INTEGER PRIMARY KEY, flag TEXT NOT NULL UNIQUE, group_id INT NOT NULL, sent BOOLEAN NOT NULL DEFAULT 0)";
+const FLAG_TABLE: &str = "CREATE TABLE IF NOT EXISTS flags 
+    (id INTEGER PRIMARY KEY, flag TEXT NOT NULL UNIQUE, group_id INT NOT NULL,
+    sent BOOLEAN NOT NULL DEFAULT 0)";
 const SELECT_UNSENT: &str = "SELECT id, flag, group_id, sent FROM flags WHERE sent = 0";
 const UPDATE_SENT: &str = "UPDATE flags SET sent = 1 WHERE id = ?";
 
