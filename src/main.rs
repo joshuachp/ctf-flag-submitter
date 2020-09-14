@@ -169,10 +169,14 @@ fn get_unsent_flags(db: &Connection) -> Result<Vec<Arc<Flag>>, rusqlite::Error> 
     Ok(flags)
 }
 
-fn set_sent_flags(db: &Connection, id: i64) -> rusqlite::Result<()> {
-    println!("[SET] Set flag with id {} as sent", id);
-    // Set the flag with the id to sent
-    db.execute(UPDATE_SENT, params![id])?;
+fn set_sent_flags(db: &mut Connection, flag_set: &mut HashSet<i64>) -> rusqlite::Result<()> {
+    let transaction = db.transaction()?;
+    for id in flag_set.drain() {
+        println!("[SET] Set flag with id {} as sent", id);
+        // Set the flag with the id to sent
+        transaction.execute(UPDATE_SENT, params![id])?;
+    }
+    transaction.commit()?;
     Ok(())
 }
 
@@ -252,7 +256,7 @@ async fn send_flags_with_throttle(
     joins
 }
 
-async fn main_loop(db: &Connection, config: &Arc<Config>) {
+async fn main_loop(db: &mut Connection, config: &Arc<Config>) {
     // Interval for checking flags to sent
     let mut interval = interval(Duration::from_secs(config.check_interval as u64));
     // Set of all the sent flags
@@ -274,10 +278,8 @@ async fn main_loop(db: &Connection, config: &Arc<Config>) {
         }
         // Update all the sent flags
         let mut hash_set = sent_set.lock().unwrap();
-        for id in hash_set.drain() {
-            if let Err(err) = set_sent_flags(db, id) {
-                eprintln!("[ERROR][SET] {}", err);
-            }
+        if let Err(err) = set_sent_flags(db, &mut hash_set) {
+            eprintln!("[ERROR][SET] {}", err);
         }
     }
 }
@@ -285,8 +287,8 @@ async fn main_loop(db: &Connection, config: &Arc<Config>) {
 #[tokio::main]
 async fn main() -> rusqlite::Result<()> {
     let config = config();
-    let db = Connection::open(&config.db_path)?;
+    let mut db = Connection::open(&config.db_path)?;
     setup(&db)?;
-    main_loop(&db, &config).await;
+    main_loop(&mut db, &config).await;
     Ok(())
 }
