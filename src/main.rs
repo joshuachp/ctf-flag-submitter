@@ -94,11 +94,14 @@ fn config() -> Arc<Config> {
         .get_matches();
 
     if matches.is_present("config") {
-        let config_file =
-            read_config_file(matches.value_of("config").unwrap()).unwrap_or_else(|err| {
-                eprintln!("[ERROR][CONFIG] {}", err);
-                panic!("read_config_file");
-            });
+        let config_path = matches.value_of("config").unwrap();
+
+        println!("[CONFIG] Reading config file {}", config_path);
+
+        let config_file = read_config_file(config_path).unwrap_or_else(|err| {
+            eprintln!("[ERROR][CONFIG] {}", err);
+            panic!("read_config_file");
+        });
         let mut config: Config = toml::from_str(&config_file).unwrap_or_else(|err| {
             eprintln!("[ERROR][CONFIG] {}", err);
             panic!("toml::from_str");
@@ -122,6 +125,8 @@ fn config() -> Arc<Config> {
 
         return Arc::new(config);
     }
+
+    println!("[CONFIG] Reading configuration arguments");
     Arc::new(Config {
         db_path: String::from(matches.value_of("db_path").unwrap()),
         server_url: String::from(matches.value_of("server_url").unwrap()),
@@ -139,6 +144,7 @@ fn read_config_file(path: &str) -> std::io::Result<String> {
 }
 
 fn setup(db: &Connection) -> rusqlite::Result<()> {
+    println!("[SETUP] Creating SQLite tables");
     // Create table flag
     db.execute(FLAG_TABLE, params![])?;
     Ok(())
@@ -159,11 +165,12 @@ fn get_unsent_flags(db: &Connection) -> Result<Vec<Arc<Flag>>, rusqlite::Error> 
         })?
         .map(|x| Arc::new(x.unwrap()))
         .collect();
-    println!("[DEBUG][GET] flags: {:#?}", flags);
+    println!("[GET] flags: {:#?}", flags);
     Ok(flags)
 }
 
 fn set_sent_flags(db: &Connection, id: i64) -> rusqlite::Result<()> {
+    println!("[SET] Set flag with id {} as sent", id);
     // Set the flag with the id to sent
     db.execute(UPDATE_SENT, params![id])?;
     Ok(())
@@ -228,6 +235,11 @@ async fn send_flags_with_throttle(
                             println!("[SENT] Flag sent flag: {} group: {}", flag.flag, flag.group);
                             let mut hash_set = sent_set.lock().unwrap();
                             hash_set.insert(flag.id);
+                        } else {
+                            println!(
+                                "[ERROR][RESPONSE] Server responded unsuccessful for flag {}",
+                                flag.flag
+                            );
                         }
                     }
                     Err(err) => eprintln!("[ERROR][SEND] {}", err),
