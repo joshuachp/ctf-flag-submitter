@@ -104,7 +104,7 @@ fn config() -> Arc<Config> {
             panic!("toml::from_str");
         });
 
-        if matches.is_present("db_path") {
+        if matches.occurrences_of("db_path") != 0 {
             config.db_path = String::from(matches.value_of("db_path").unwrap());
         }
         if matches.is_present("server_url") {
@@ -113,10 +113,10 @@ fn config() -> Arc<Config> {
         if matches.is_present("team_token") {
             config.team_token = String::from(matches.value_of("team_token").unwrap());
         }
-        if matches.is_present("check_interval") {
+        if matches.occurrences_of("check_interval") != 0 {
             config.check_interval = value_t_or_exit!(matches.value_of("check_interval"), u8);
         }
-        if matches.is_present("flags_quota") {
+        if matches.occurrences_of("flags_quota") != 0 {
             config.flags_quota = value_t_or_exit!(matches.value_of("flags_quota"), u8);
         }
 
