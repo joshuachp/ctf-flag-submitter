@@ -1,6 +1,6 @@
 use clap::{crate_description, crate_name, crate_version, value_t_or_exit, App, Arg};
 use reqwest::{Client, Response};
-use rusqlite::{params, Connection};
+use rusqlite;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs::File;
@@ -10,15 +10,11 @@ use tokio::task::{spawn, JoinHandle};
 use tokio::time::{interval, Duration};
 use toml;
 
-// Table
-const FLAG_TABLE: &str = "CREATE TABLE IF NOT EXISTS flags 
-    (id INTEGER PRIMARY KEY, flag TEXT NOT NULL UNIQUE, group_id INT NOT NULL,
-    sent BOOLEAN NOT NULL DEFAULT 0)";
-const SELECT_UNSENT: &str = "SELECT id, flag, group_id, sent FROM flags WHERE sent = 0";
-const UPDATE_SENT: &str = "UPDATE flags SET sent = 1 WHERE id = ?";
+mod database;
+use crate::database::Database;
 
 #[derive(Debug)]
-struct Flag {
+pub struct Flag {
     id: i64,
     flag: String,
     group: u8,
@@ -26,7 +22,7 @@ struct Flag {
 }
 
 #[derive(Debug, Deserialize)]
-struct Config {
+pub struct Config {
     db_path: String,
     server_url: String,
     team_token: String,
@@ -143,43 +139,6 @@ fn read_config_file(path: &str) -> std::io::Result<String> {
     Ok(contents)
 }
 
-fn setup(db: &Connection) -> rusqlite::Result<()> {
-    println!("[SETUP] Creating SQLite tables");
-    // Create table flag
-    db.execute(FLAG_TABLE, params![])?;
-    Ok(())
-}
-
-fn get_unsent_flags(db: &Connection) -> Result<Vec<Arc<Flag>>, rusqlite::Error> {
-    // Prepare query for select unsent flags
-    let mut prepare = db.prepare(SELECT_UNSENT)?;
-    // Map return to Flag struct
-    let flags: Vec<Arc<Flag>> = prepare
-        .query_map(params![], |row| {
-            Ok(Flag {
-                id: row.get(0)?,
-                flag: row.get(1)?,
-                group: row.get(2)?,
-                sent: row.get(3)?,
-            })
-        })?
-        .map(|x| Arc::new(x.unwrap()))
-        .collect();
-    println!("[GET] flags: {:#?}", flags);
-    Ok(flags)
-}
-
-fn set_sent_flags(db: &mut Connection, flag_set: &mut HashSet<i64>) -> rusqlite::Result<()> {
-    let transaction = db.transaction()?;
-    for id in flag_set.drain() {
-        println!("[SET] Set flag with id {} as sent", id);
-        // Set the flag with the id to sent
-        transaction.execute(UPDATE_SENT, params![id])?;
-    }
-    transaction.commit()?;
-    Ok(())
-}
-
 async fn send_single_flag(
     server_url: &str,
     team_token: &str,
@@ -256,7 +215,7 @@ async fn send_flags_with_throttle(
     joins
 }
 
-async fn main_loop(db: &mut Connection, config: &Arc<Config>) {
+async fn main_loop(db: &mut database::Sqlite, config: &Arc<Config>) {
     // Interval for checking flags to sent
     let mut interval = interval(Duration::from_secs(config.check_interval as u64));
     // Set of all the sent flags
@@ -264,7 +223,7 @@ async fn main_loop(db: &mut Connection, config: &Arc<Config>) {
 
     loop {
         interval.tick().await;
-        match get_unsent_flags(db) {
+        match db.get_unsent_flags() {
             Ok(flags) => {
                 // Send all the flags and wait for all threads to finish
                 let joins = send_flags_with_throttle(&sent_set, &flags, config).await;
@@ -278,7 +237,7 @@ async fn main_loop(db: &mut Connection, config: &Arc<Config>) {
         }
         // Update all the sent flags
         let mut hash_set = sent_set.lock().unwrap();
-        if let Err(err) = set_sent_flags(db, &mut hash_set) {
+        if let Err(err) = db.set_sent_flags(&mut hash_set) {
             eprintln!("[ERROR][SET] {}", err);
         }
     }
@@ -287,8 +246,10 @@ async fn main_loop(db: &mut Connection, config: &Arc<Config>) {
 #[tokio::main]
 async fn main() -> rusqlite::Result<()> {
     let config = config();
-    let mut db = Connection::open(&config.db_path)?;
-    setup(&db)?;
+    let mut db = Box::new(database::Sqlite {
+        db: rusqlite::Connection::open(&config.db_path)?,
+    });
+    db.setup()?;
     main_loop(&mut db, &config).await;
     Ok(())
 }
