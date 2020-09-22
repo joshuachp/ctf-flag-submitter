@@ -15,9 +15,9 @@ use crate::database::Database;
 
 #[derive(Debug)]
 pub struct Flag {
-    id: i64,
+    id: i32,
     flag: String,
-    group: u8,
+    group: i32,
     sent: bool,
 }
 
