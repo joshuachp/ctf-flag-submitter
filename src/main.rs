@@ -115,6 +115,13 @@ fn config() -> Config {
             panic!("toml::from_str");
         });
 
+        // Error if no configuration is provided since otherwise it will default
+        // to the SQLite database flag.db
+        if config.sqlite.is_none() && config.postgres.is_none() {
+            eprintln!("[ERROR][CONFIG] No database configuration provided in the file");
+            panic!("config");
+        }
+
         if matches.occurrences_of("sqlite") != 0 {
             config.sqlite = Some(String::from(matches.value_of("sqlite").unwrap()));
         }
