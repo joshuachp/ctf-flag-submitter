@@ -1,8 +1,10 @@
 use clap::{crate_description, crate_name, crate_version, value_t_or_exit, App, Arg};
+use postgres;
 use reqwest::{Client, Response};
-use rusqlite::{params, Connection};
+use rusqlite;
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::error::Error;
 use std::fs::File;
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -10,31 +12,28 @@ use tokio::task::{spawn, JoinHandle};
 use tokio::time::{interval, Duration};
 use toml;
 
-// Table
-const FLAG_TABLE: &str = "CREATE TABLE IF NOT EXISTS flags 
-    (id INTEGER PRIMARY KEY, flag TEXT NOT NULL UNIQUE, group_id INT NOT NULL,
-    sent BOOLEAN NOT NULL DEFAULT 0)";
-const SELECT_UNSENT: &str = "SELECT id, flag, group_id, sent FROM flags WHERE sent = 0";
-const UPDATE_SENT: &str = "UPDATE flags SET sent = 1 WHERE id = ?";
+mod database;
+use crate::database::Database;
 
 #[derive(Debug)]
-struct Flag {
+pub struct Flag {
     id: i64,
     flag: String,
-    group: u8,
+    group: i32,
     sent: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct Config {
-    db_path: String,
+#[derive(Clone, Debug, Deserialize)]
+pub struct Config {
+    sqlite: Option<String>,
+    postgres: Option<String>,
     server_url: String,
     team_token: String,
     check_interval: u8,
     flags_quota: u8,
 }
 
-fn config() -> Arc<Config> {
+fn config() -> Config {
     let matches = App::new(crate_name!())
         .version(crate_version!())
         .about(crate_description!())
@@ -47,13 +46,22 @@ fn config() -> Arc<Config> {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("db_path")
-                .short("D")
-                .long("database")
-                .value_name("DB_PATH")
+            Arg::with_name("sqlite")
+                .short("S")
+                .long("sqlite-path")
+                .value_name("PATH")
                 .help("Path to the SQLite database")
                 .takes_value(true)
-                .default_value("flag.db"),
+                .default_value_if("postgres", None, "flag.db"),
+        )
+        .arg(
+            Arg::with_name("postgres")
+                .short("P")
+                .long("postgres-conf")
+                .value_name("CONFIG")
+                .help("PostgreSQL configuration for the DB client")
+                .takes_value(true)
+                .required_unless_one(&["config", "sqlite"]),
         )
         .arg(
             Arg::with_name("server_url")
@@ -107,8 +115,11 @@ fn config() -> Arc<Config> {
             panic!("toml::from_str");
         });
 
-        if matches.occurrences_of("db_path") != 0 {
-            config.db_path = String::from(matches.value_of("db_path").unwrap());
+        if matches.occurrences_of("sqlite") != 0 {
+            config.sqlite = Some(String::from(matches.value_of("sqlite").unwrap()));
+        }
+        if matches.occurrences_of("postgres") != 0 {
+            config.postgres = Some(String::from(matches.value_of("postgres").unwrap()));
         }
         if matches.is_present("server_url") {
             config.server_url = String::from(matches.value_of("server_url").unwrap());
@@ -123,17 +134,18 @@ fn config() -> Arc<Config> {
             config.flags_quota = value_t_or_exit!(matches.value_of("flags_quota"), u8);
         }
 
-        return Arc::new(config);
+        return config;
     }
 
     println!("[CONFIG] Reading configuration arguments");
-    Arc::new(Config {
-        db_path: String::from(matches.value_of("db_path").unwrap()),
+    Config {
+        sqlite: Some(String::from(matches.value_of("sqlite").unwrap())),
+        postgres: Some(String::from(matches.value_of("postgres").unwrap())),
         server_url: String::from(matches.value_of("server_url").unwrap()),
         team_token: String::from(matches.value_of("team_token").unwrap()),
         check_interval: value_t_or_exit!(matches.value_of("check_interval"), u8),
         flags_quota: value_t_or_exit!(matches.value_of("flags_quota"), u8),
-    })
+    }
 }
 
 fn read_config_file(path: &str) -> std::io::Result<String> {
@@ -141,43 +153,6 @@ fn read_config_file(path: &str) -> std::io::Result<String> {
     let mut contents = String::new();
     file.read_to_string(&mut contents)?;
     Ok(contents)
-}
-
-fn setup(db: &Connection) -> rusqlite::Result<()> {
-    println!("[SETUP] Creating SQLite tables");
-    // Create table flag
-    db.execute(FLAG_TABLE, params![])?;
-    Ok(())
-}
-
-fn get_unsent_flags(db: &Connection) -> Result<Vec<Arc<Flag>>, rusqlite::Error> {
-    // Prepare query for select unsent flags
-    let mut prepare = db.prepare(SELECT_UNSENT)?;
-    // Map return to Flag struct
-    let flags: Vec<Arc<Flag>> = prepare
-        .query_map(params![], |row| {
-            Ok(Flag {
-                id: row.get(0)?,
-                flag: row.get(1)?,
-                group: row.get(2)?,
-                sent: row.get(3)?,
-            })
-        })?
-        .map(|x| Arc::new(x.unwrap()))
-        .collect();
-    println!("[GET] flags: {:#?}", flags);
-    Ok(flags)
-}
-
-fn set_sent_flags(db: &mut Connection, flag_set: &mut HashSet<i64>) -> rusqlite::Result<()> {
-    let transaction = db.transaction()?;
-    for id in flag_set.drain() {
-        println!("[SET] Set flag with id {} as sent", id);
-        // Set the flag with the id to sent
-        transaction.execute(UPDATE_SENT, params![id])?;
-    }
-    transaction.commit()?;
-    Ok(())
 }
 
 async fn send_single_flag(
@@ -256,7 +231,7 @@ async fn send_flags_with_throttle(
     joins
 }
 
-async fn main_loop(db: &mut Connection, config: &Arc<Config>) {
+async fn main_loop<T: Error, U: database::Database<T>>(db: &mut U, config: &Arc<Config>) {
     // Interval for checking flags to sent
     let mut interval = interval(Duration::from_secs(config.check_interval as u64));
     // Set of all the sent flags
@@ -264,7 +239,7 @@ async fn main_loop(db: &mut Connection, config: &Arc<Config>) {
 
     loop {
         interval.tick().await;
-        match get_unsent_flags(db) {
+        match db.get_unsent_flags() {
             Ok(flags) => {
                 // Send all the flags and wait for all threads to finish
                 let joins = send_flags_with_throttle(&sent_set, &flags, config).await;
@@ -278,17 +253,33 @@ async fn main_loop(db: &mut Connection, config: &Arc<Config>) {
         }
         // Update all the sent flags
         let mut hash_set = sent_set.lock().unwrap();
-        if let Err(err) = set_sent_flags(db, &mut hash_set) {
+        if let Err(err) = db.set_sent_flags(&mut hash_set) {
             eprintln!("[ERROR][SET] {}", err);
         }
     }
 }
 
 #[tokio::main]
-async fn main() -> rusqlite::Result<()> {
+async fn main() {
     let config = config();
-    let mut db = Connection::open(&config.db_path)?;
-    setup(&db)?;
-    main_loop(&mut db, &config).await;
-    Ok(())
+    let arc_config = Arc::new(config.clone());
+    if let Some(sqlite) = config.sqlite {
+        let mut db = Box::new(database::Sqlite {
+            db: rusqlite::Connection::open(&sqlite).unwrap(),
+        });
+        if let Err(err) = db.setup() {
+            eprintln!("[ERROR][SETUP] {}", err);
+            panic!("main");
+        }
+        main_loop(&mut (*db), &arc_config).await;
+    } else {
+        let mut db = Box::new(database::Postgres {
+            db: postgres::Client::connect(&config.postgres.unwrap(), postgres::NoTls).unwrap(),
+        });
+        if let Err(err) = db.setup() {
+            eprintln!("[ERROR][SETUP] {}", err);
+            panic!("main");
+        }
+        main_loop(&mut (*db), &arc_config).await;
+    }
 }

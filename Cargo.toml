@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 clap = "2.33"
+postgres = "0.17"
 reqwest = "0.10"
 rusqlite = "0.24"
 serde = { version = "1.0", features = ["derive"] }
