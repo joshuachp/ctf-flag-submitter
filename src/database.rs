@@ -20,25 +20,21 @@ pub struct Postgres {
     pub db: postgres::Client,
 }
 
-pub trait Database {
-    type Error;
-
-    fn setup(&self) -> Result<(), Self::Error>;
-    fn get_unsent_flags(&self) -> Result<Vec<Arc<Flag>>, Self::Error>;
-    fn set_sent_flags(&mut self, flag_set: &mut HashSet<i64>) -> Result<(), Self::Error>;
+pub trait Database<T> {
+    fn setup(&mut self) -> Result<(), T>;
+    fn get_unsent_flags(&mut self) -> Result<Vec<Arc<Flag>>, T>;
+    fn set_sent_flags(&mut self, flag_set: &mut HashSet<i64>) -> Result<(), T>;
 }
 
-impl Database for Sqlite {
-    type Error = rusqlite::Error;
-
-    fn setup(&self) -> rusqlite::Result<()> {
+impl Database<rusqlite::Error> for Sqlite {
+    fn setup(&mut self) -> rusqlite::Result<()> {
         println!("[SETUP] Creating SQLite tables");
         // Create table flag
         &self.db.execute_batch(FLAG_TABLE)?;
         Ok(())
     }
 
-    fn get_unsent_flags(&self) -> rusqlite::Result<Vec<Arc<Flag>>> {
+    fn get_unsent_flags(&mut self) -> rusqlite::Result<Vec<Arc<Flag>>> {
         // Prepare query for select unsent flags
         let mut prepare = self.db.prepare(SELECT_UNSENT)?;
         // Map return to Flag struct
@@ -69,17 +65,15 @@ impl Database for Sqlite {
     }
 }
 
-impl Database for Postgres {
-    type Error = postgres::Error;
-
-    fn setup(&self) -> Result<(), postgres::Error> {
+impl Database<postgres::Error> for Postgres {
+    fn setup(&mut self) -> Result<(), postgres::Error> {
         println!("[SETUP] Creating SQLite tables");
         // Create table flag
         &self.db.execute(FLAG_TABLE, &[])?;
         Ok(())
     }
 
-    fn get_unsent_flags(&self) -> Result<Vec<Arc<Flag>>, postgres::Error> {
+    fn get_unsent_flags(&mut self) -> Result<Vec<Arc<Flag>>, postgres::Error> {
         // Map return to Flag struct
         let flags: Vec<Arc<Flag>> = self
             .db
@@ -99,7 +93,7 @@ impl Database for Postgres {
     }
 
     fn set_sent_flags(&mut self, flag_set: &mut HashSet<i64>) -> Result<(), postgres::Error> {
-        let transaction = self.db.transaction()?;
+        let mut transaction = self.db.transaction()?;
         for id in flag_set.drain() {
             println!("[SET] Set flag with id {} as sent", id);
             // Set the flag with the id to sent

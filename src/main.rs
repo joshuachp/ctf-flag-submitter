@@ -1,8 +1,10 @@
 use clap::{crate_description, crate_name, crate_version, value_t_or_exit, App, Arg};
+use postgres;
 use reqwest::{Client, Response};
 use rusqlite;
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::error::Error;
 use std::fs::File;
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -15,22 +17,23 @@ use crate::database::Database;
 
 #[derive(Debug)]
 pub struct Flag {
-    id: i32,
+    id: i64,
     flag: String,
     group: i32,
     sent: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Config {
-    db_path: String,
+    sqlite: Option<String>,
+    postgres: Option<String>,
     server_url: String,
     team_token: String,
     check_interval: u8,
     flags_quota: u8,
 }
 
-fn config() -> Arc<Config> {
+fn config() -> Config {
     let matches = App::new(crate_name!())
         .version(crate_version!())
         .about(crate_description!())
@@ -43,13 +46,22 @@ fn config() -> Arc<Config> {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("db_path")
-                .short("D")
-                .long("database")
-                .value_name("DB_PATH")
+            Arg::with_name("sqlite")
+                .short("S")
+                .long("sqlite-path")
+                .value_name("PATH")
                 .help("Path to the SQLite database")
                 .takes_value(true)
-                .default_value("flag.db"),
+                .default_value_if("postgres", None, "flag.db"),
+        )
+        .arg(
+            Arg::with_name("postgres")
+                .short("P")
+                .long("postgres-conf")
+                .value_name("CONFIG")
+                .help("PostgreSQL configuration for the DB client")
+                .takes_value(true)
+                .required_unless_one(&["config", "sqlite"]),
         )
         .arg(
             Arg::with_name("server_url")
@@ -103,8 +115,11 @@ fn config() -> Arc<Config> {
             panic!("toml::from_str");
         });
 
-        if matches.occurrences_of("db_path") != 0 {
-            config.db_path = String::from(matches.value_of("db_path").unwrap());
+        if matches.occurrences_of("sqlite") != 0 {
+            config.sqlite = Some(String::from(matches.value_of("sqlite").unwrap()));
+        }
+        if matches.occurrences_of("postgres") != 0 {
+            config.postgres = Some(String::from(matches.value_of("postgres").unwrap()));
         }
         if matches.is_present("server_url") {
             config.server_url = String::from(matches.value_of("server_url").unwrap());
@@ -119,17 +134,18 @@ fn config() -> Arc<Config> {
             config.flags_quota = value_t_or_exit!(matches.value_of("flags_quota"), u8);
         }
 
-        return Arc::new(config);
+        return config;
     }
 
     println!("[CONFIG] Reading configuration arguments");
-    Arc::new(Config {
-        db_path: String::from(matches.value_of("db_path").unwrap()),
+    Config {
+        sqlite: Some(String::from(matches.value_of("sqlite").unwrap())),
+        postgres: Some(String::from(matches.value_of("postgres").unwrap())),
         server_url: String::from(matches.value_of("server_url").unwrap()),
         team_token: String::from(matches.value_of("team_token").unwrap()),
         check_interval: value_t_or_exit!(matches.value_of("check_interval"), u8),
         flags_quota: value_t_or_exit!(matches.value_of("flags_quota"), u8),
-    })
+    }
 }
 
 fn read_config_file(path: &str) -> std::io::Result<String> {
@@ -215,7 +231,7 @@ async fn send_flags_with_throttle(
     joins
 }
 
-async fn main_loop(db: &mut database::Sqlite, config: &Arc<Config>) {
+async fn main_loop<T: Error, U: database::Database<T>>(db: &mut U, config: &Arc<Config>) {
     // Interval for checking flags to sent
     let mut interval = interval(Duration::from_secs(config.check_interval as u64));
     // Set of all the sent flags
@@ -244,12 +260,26 @@ async fn main_loop(db: &mut database::Sqlite, config: &Arc<Config>) {
 }
 
 #[tokio::main]
-async fn main() -> rusqlite::Result<()> {
+async fn main() {
     let config = config();
-    let mut db = Box::new(database::Sqlite {
-        db: rusqlite::Connection::open(&config.db_path)?,
-    });
-    db.setup()?;
-    main_loop(&mut db, &config).await;
-    Ok(())
+    let arc_config = Arc::new(config.clone());
+    if let Some(sqlite) = config.sqlite {
+        let mut db = Box::new(database::Sqlite {
+            db: rusqlite::Connection::open(&sqlite).unwrap(),
+        });
+        if let Err(err) = db.setup() {
+            eprintln!("[ERROR][SETUP] {}", err);
+            panic!("main");
+        }
+        main_loop(&mut (*db), &arc_config).await;
+    } else {
+        let mut db = Box::new(database::Postgres {
+            db: postgres::Client::connect(&config.postgres.unwrap(), postgres::NoTls).unwrap(),
+        });
+        if let Err(err) = db.setup() {
+            eprintln!("[ERROR][SETUP] {}", err);
+            panic!("main");
+        }
+        main_loop(&mut (*db), &arc_config).await;
+    }
 }
