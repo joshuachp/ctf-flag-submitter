@@ -1,4 +1,5 @@
-db_path = "flag.db"
+sqlite = "flag.db"
+# postgres = "host=localhost user=postgres"
 server_url = "http://localhost:8000"
 team_token = "TOKEN"
 check_interval = 10
