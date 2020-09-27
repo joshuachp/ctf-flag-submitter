@@ -4,3 +4,4 @@ server_url = "http://localhost:8000"
 team_token = "TOKEN"
 check_interval = 10
 flags_quota = 25
+# single_run = true
