@@ -238,6 +238,30 @@ async fn send_flags_with_throttle(
     joins
 }
 
+async fn run<T: Error, U: database::Database<T>>(
+    db: &mut U,
+    config: &Arc<Config>,
+    sent_set: &Arc<Mutex<HashSet<i64>>>,
+) {
+    match db.get_unsent_flags() {
+        Ok(flags) => {
+            // Send all the flags and wait for all threads to finish
+            let joins = send_flags_with_throttle(&sent_set, &flags, config).await;
+            for join in joins {
+                if let Err(err) = join.await {
+                    eprintln!("[ERROR][JOIN] {}", err);
+                }
+            }
+        }
+        Err(err) => eprintln!("[ERROR][GET] {}", err),
+    }
+    // Update all the sent flags
+    let mut hash_set = sent_set.lock().unwrap();
+    if let Err(err) = db.set_sent_flags(&mut hash_set) {
+        eprintln!("[ERROR][SET] {}", err);
+    }
+}
+
 async fn main_loop<T: Error, U: database::Database<T>>(db: &mut U, config: &Arc<Config>) {
     // Interval for checking flags to sent
     let mut interval = interval(Duration::from_secs(config.check_interval as u64));
@@ -246,24 +270,13 @@ async fn main_loop<T: Error, U: database::Database<T>>(db: &mut U, config: &Arc<
 
     loop {
         interval.tick().await;
-        match db.get_unsent_flags() {
-            Ok(flags) => {
-                // Send all the flags and wait for all threads to finish
-                let joins = send_flags_with_throttle(&sent_set, &flags, config).await;
-                for join in joins {
-                    if let Err(err) = join.await {
-                        eprintln!("[ERROR][JOIN] {}", err);
-                    }
-                }
-            }
-            Err(err) => eprintln!("[ERROR][GET] {}", err),
-        }
-        // Update all the sent flags
-        let mut hash_set = sent_set.lock().unwrap();
-        if let Err(err) = db.set_sent_flags(&mut hash_set) {
-            eprintln!("[ERROR][SET] {}", err);
-        }
+        run(db, config, &sent_set).await;
     }
+}
+
+async fn single_run<T: Error, U: database::Database<T>>(db: &mut U, config: &Arc<Config>) {
+    let sent_set: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
+    run(db, config, &sent_set).await;
 }
 
 #[tokio::main]
