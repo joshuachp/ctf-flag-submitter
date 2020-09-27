@@ -25,3 +25,6 @@ flag-submitter --sqlite-path flag.db --url "http://localhost:8000/index.php"
 ```
 
 There is an example configuration in the file `example.config.toml`.
+
+With the flag `--single-run` or the config value the application can be run just
+one time for testing.
