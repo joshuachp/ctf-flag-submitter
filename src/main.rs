@@ -31,6 +31,7 @@ pub struct Config {
     team_token: String,
     check_interval: u8,
     flags_quota: u8,
+    single_run: Option<bool>,
 }
 
 fn config() -> Config {
@@ -93,11 +94,17 @@ fn config() -> Config {
         .arg(
             Arg::with_name("flags_quota")
                 .short("f")
-                .long("flags_quota")
+                .long("flags-quota")
                 .value_name("FLAGS_QUOTA")
                 .help("Max number of flags to send to the server per seconds")
                 .takes_value(true)
                 .default_value("25"),
+        )
+        .arg(
+            Arg::with_name("single_run")
+                .short("s")
+                .long("single-run")
+                .help("Run the application a single time."),
         )
         .get_matches();
 
@@ -140,6 +147,9 @@ fn config() -> Config {
         if matches.occurrences_of("flags_quota") != 0 {
             config.flags_quota = value_t_or_exit!(matches.value_of("flags_quota"), u8);
         }
+        if matches.is_present("single_run") {
+            config.single_run = Some(true);
+        }
 
         return config;
     }
@@ -152,6 +162,7 @@ fn config() -> Config {
         team_token: String::from(matches.value_of("team_token").unwrap()),
         check_interval: value_t_or_exit!(matches.value_of("check_interval"), u8),
         flags_quota: value_t_or_exit!(matches.value_of("flags_quota"), u8),
+        single_run: Some(matches.is_present("single_run")),
     }
 }
 
@@ -281,24 +292,45 @@ async fn main() {
     let config = config();
     // Set of all the sent flags
     let sent_set: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
+    // Configuration to share across threads, only for read
     let arc_config = Arc::new(config.clone());
+
+    // Select the database type, default to sqlite
     if let Some(sqlite) = config.sqlite {
+        // Database connection, with appropriate functions
         let mut db = Box::new(database::Sqlite {
             db: rusqlite::Connection::open(&sqlite).unwrap(),
         });
+
+        // Setup the database, creating necessary tables
         if let Err(err) = db.setup() {
             eprintln!("[ERROR][SETUP] {}", err);
             panic!("main");
         }
-        main_loop(&mut (*db), &arc_config, &sent_set).await;
+
+        // Select the run mode, default to a loop
+        if !config.single_run.unwrap_or(false) {
+            main_loop(&mut (*db), &arc_config, &sent_set).await;
+        } else {
+            run(&mut (*db), &arc_config, &sent_set).await;
+        }
     } else {
+        // Database connection, with appropriate functions
         let mut db = Box::new(database::Postgres {
             db: postgres::Client::connect(&config.postgres.unwrap(), postgres::NoTls).unwrap(),
         });
+
+        // Setup the database, creating necessary tables
         if let Err(err) = db.setup() {
             eprintln!("[ERROR][SETUP] {}", err);
             panic!("main");
         }
-        main_loop(&mut (*db), &arc_config, &sent_set).await;
+
+        // Select the run mode, default to a loop
+        if !config.single_run.unwrap_or(false) {
+            main_loop(&mut (*db), &arc_config, &sent_set).await;
+        } else {
+            run(&mut (*db), &arc_config, &sent_set).await;
+        }
     }
 }
