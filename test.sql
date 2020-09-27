@@ -1,4 +1,9 @@
 BEGIN TRANSACTION;
+--CREATE
+CREATE TABLE IF NOT EXISTS flags (id INTEGER PRIMARY KEY,
+    flag TEXT NOT NULL UNIQUE, group_id INT NOT NULL, 
+    status INT2 NOT NULL DEFAULT 0 CHECK (status < 4));
+-- INSERT
 INSERT INTO flags (flag, group_id) VALUES ('flag{1}', 1);
 INSERT INTO flags (flag, group_id) VALUES ('flag{2}', 1);
 INSERT INTO flags (flag, group_id) VALUES ('flag{3}', 1);
