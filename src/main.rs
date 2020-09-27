@@ -262,11 +262,13 @@ async fn run<T: Error, U: database::Database<T>>(
     }
 }
 
-async fn main_loop<T: Error, U: database::Database<T>>(db: &mut U, config: &Arc<Config>) {
+async fn main_loop<T: Error, U: database::Database<T>>(
+    db: &mut U,
+    config: &Arc<Config>,
+    sent_set: &Arc<Mutex<HashSet<i64>>>,
+) {
     // Interval for checking flags to sent
     let mut interval = interval(Duration::from_secs(config.check_interval as u64));
-    // Set of all the sent flags
-    let sent_set: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
 
     loop {
         interval.tick().await;
@@ -274,14 +276,11 @@ async fn main_loop<T: Error, U: database::Database<T>>(db: &mut U, config: &Arc<
     }
 }
 
-async fn single_run<T: Error, U: database::Database<T>>(db: &mut U, config: &Arc<Config>) {
-    let sent_set: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
-    run(db, config, &sent_set).await;
-}
-
 #[tokio::main]
 async fn main() {
     let config = config();
+    // Set of all the sent flags
+    let sent_set: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
     let arc_config = Arc::new(config.clone());
     if let Some(sqlite) = config.sqlite {
         let mut db = Box::new(database::Sqlite {
@@ -291,7 +290,7 @@ async fn main() {
             eprintln!("[ERROR][SETUP] {}", err);
             panic!("main");
         }
-        main_loop(&mut (*db), &arc_config).await;
+        main_loop(&mut (*db), &arc_config, &sent_set).await;
     } else {
         let mut db = Box::new(database::Postgres {
             db: postgres::Client::connect(&config.postgres.unwrap(), postgres::NoTls).unwrap(),
@@ -300,6 +299,6 @@ async fn main() {
             eprintln!("[ERROR][SETUP] {}", err);
             panic!("main");
         }
-        main_loop(&mut (*db), &arc_config).await;
+        main_loop(&mut (*db), &arc_config, &sent_set).await;
     }
 }
