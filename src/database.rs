@@ -8,9 +8,11 @@ use std::sync::Arc;
 // Queries
 const FLAG_TABLE: &str = "CREATE TABLE IF NOT EXISTS flags 
     (id INTEGER PRIMARY KEY, flag TEXT NOT NULL UNIQUE, group_id INT NOT NULL,
-    status INT2 NOT NULL DEFAULT 0 CHECK (status < 4))";
+    status INT2 NOT NULL DEFAULT 0 CHECK (status < 4),
+    received_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, sent_time TEXT)";
 const SELECT_UNSENT: &str = "SELECT id, flag, group_id, status FROM flags WHERE status = 0";
-const UPDATE_SENT: &str = "UPDATE flags SET status = 1 WHERE id = ?";
+const UPDATE_SENT: &str = "UPDATE flags SET status = 1,
+    sent_time = CURRENT_TIMESTAMP WHERE id = ?";
 const UPDATE_INVALID: &str = "UPDATE flags SET status = 2 WHERE id = ?";
 
 pub struct Sqlite {
