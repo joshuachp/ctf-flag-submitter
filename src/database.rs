@@ -1,4 +1,4 @@
-use super::Flag;
+use super::{Flag, FLAG_STATUS};
 
 use postgres;
 use rusqlite;
@@ -8,9 +8,10 @@ use std::sync::Arc;
 // Queries
 const FLAG_TABLE: &str = "CREATE TABLE IF NOT EXISTS flags 
     (id INTEGER PRIMARY KEY, flag TEXT NOT NULL UNIQUE, group_id INT NOT NULL,
-    sent BOOLEAN NOT NULL DEFAULT 0)";
-const SELECT_UNSENT: &str = "SELECT id, flag, group_id, sent FROM flags WHERE sent = 0";
-const UPDATE_SENT: &str = "UPDATE flags SET sent = 1 WHERE id = ?";
+    status INT2 NOT NULL DEFAULT 0 CHECK (status < 4))";
+const SELECT_UNSENT: &str = "SELECT id, flag, group_id, sent FROM flags WHERE status = 0";
+const UPDATE_SENT: &str = "UPDATE flags SET status = 1 WHERE id = ?";
+const UPDATE_INVALID: &str = "UPDATE flags SET status = 2 WHERE id = ?";
 
 pub struct Sqlite {
     pub db: rusqlite::Connection,
@@ -23,7 +24,8 @@ pub struct Postgres {
 pub trait Database<T> {
     fn setup(&mut self) -> Result<(), T>;
     fn get_unsent_flags(&mut self) -> Result<Vec<Arc<Flag>>, T>;
-    fn set_sent_flags(&mut self, flag_set: &mut HashSet<i64>) -> Result<(), T>;
+    fn set_sent_flags(&mut self, sent_set: &mut HashSet<i64>) -> Result<(), T>;
+    fn set_invalid_flags(&mut self, invalid_set: &mut HashSet<i64>) -> Result<(), T>;
 }
 
 impl Database<rusqlite::Error> for Sqlite {
@@ -40,11 +42,12 @@ impl Database<rusqlite::Error> for Sqlite {
         // Map return to Flag struct
         let flags: Vec<Arc<Flag>> = prepare
             .query_map(rusqlite::params![], |row| {
+                let status: i32 = row.get(3)?;
                 Ok(Arc::new(Flag {
                     id: row.get(0)?,
                     flag: row.get(1)?,
                     group: row.get(2)?,
-                    sent: row.get(3)?,
+                    status: FLAG_STATUS[status as usize],
                 }))
             })?
             .map(|x| x.unwrap())
@@ -59,6 +62,17 @@ impl Database<rusqlite::Error> for Sqlite {
             println!("[SET] Set flag with id {} as sent", id);
             // Set the flag with the id to sent
             transaction.execute(UPDATE_SENT, rusqlite::params![id])?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn set_invalid_flags(&mut self, invalid_set: &mut HashSet<i64>) -> rusqlite::Result<()> {
+        let transaction = self.db.transaction()?;
+        for id in invalid_set.drain() {
+            println!("[SET] Set flag with id {} as invalid", id);
+            // Set the flag with the id to sent
+            transaction.execute(UPDATE_INVALID, rusqlite::params![id])?;
         }
         transaction.commit()?;
         Ok(())
@@ -80,11 +94,12 @@ impl Database<postgres::Error> for Postgres {
             .query(SELECT_UNSENT, &[])?
             .iter()
             .map(|row| {
+                let status: i32 = row.get(3);
                 Arc::new(Flag {
                     id: row.get(0),
                     flag: row.get(1),
                     group: row.get(2),
-                    sent: row.get(3),
+                    status: FLAG_STATUS[status as usize],
                 })
             })
             .collect();
@@ -92,12 +107,22 @@ impl Database<postgres::Error> for Postgres {
         Ok(flags)
     }
 
-    fn set_sent_flags(&mut self, flag_set: &mut HashSet<i64>) -> Result<(), postgres::Error> {
+    fn set_sent_flags(&mut self, sent_set: &mut HashSet<i64>) -> Result<(), postgres::Error> {
         let mut transaction = self.db.transaction()?;
-        for id in flag_set.drain() {
+        for id in sent_set.drain() {
             println!("[SET] Set flag with id {} as sent", id);
             // Set the flag with the id to sent
             transaction.execute(UPDATE_SENT, &[&id])?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+    fn set_invalid_flags(&mut self, invalid_set: &mut HashSet<i64>) -> Result<(), postgres::Error> {
+        let mut transaction = self.db.transaction()?;
+        for id in invalid_set.drain() {
+            println!("[SET] Set flag with id {} as sent", id);
+            // Set the flag with the id to sent
+            transaction.execute(UPDATE_INVALID, &[&id])?;
         }
         transaction.commit()?;
         Ok(())

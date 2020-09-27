@@ -5,6 +5,7 @@ use rusqlite;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::error::Error;
+use std::fmt;
 use std::fs::File;
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -15,14 +16,6 @@ use toml;
 mod database;
 use crate::database::Database;
 
-#[derive(Debug)]
-pub struct Flag {
-    id: i64,
-    flag: String,
-    group: i32,
-    sent: bool,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     sqlite: Option<String>,
@@ -32,6 +25,34 @@ pub struct Config {
     check_interval: u8,
     flags_quota: u8,
     single_run: Option<bool>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum FlagStatus {
+    Unsent = 0,
+    Sent = 1,
+    Invalid = 2,
+}
+
+pub const FLAG_STATUS: [FlagStatus; 3] =
+    [FlagStatus::Unsent, FlagStatus::Sent, FlagStatus::Invalid];
+
+impl fmt::Display for FlagStatus {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            FlagStatus::Unsent => write!(f, "{}", "unsent"),
+            FlagStatus::Sent => write!(f, "{}", "sent"),
+            FlagStatus::Invalid => write!(f, "{}", "invalid"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Flag {
+    id: i64,
+    flag: String,
+    group: i32,
+    status: FlagStatus,
 }
 
 fn config() -> Config {
@@ -208,6 +229,7 @@ async fn check_response(res: Response) -> bool {
 
 async fn send_flags_with_throttle(
     sent_set: &Arc<Mutex<HashSet<i64>>>,
+    invalid_set: &Arc<Mutex<HashSet<i64>>>,
     flags: &Vec<Arc<Flag>>,
     config: &Arc<Config>,
 ) -> Vec<JoinHandle<()>> {
@@ -221,6 +243,7 @@ async fn send_flags_with_throttle(
         interval.tick().await;
         for flag in chunk {
             let sent_set = Arc::clone(sent_set);
+            let invalid_set = Arc::clone(invalid_set);
             let flag = Arc::clone(flag);
             let config = Arc::clone(config);
             let join = spawn(async move {
@@ -237,6 +260,8 @@ async fn send_flags_with_throttle(
                                 "[ERROR][RESPONSE] Server responded unsuccessful for flag {}",
                                 flag.flag
                             );
+                            let mut hash_set = invalid_set.lock().unwrap();
+                            hash_set.insert(flag.id);
                         }
                     }
                     Err(err) => eprintln!("[ERROR][SEND] {}", err),
@@ -253,11 +278,12 @@ async fn run<T: Error, U: database::Database<T>>(
     db: &mut U,
     config: &Arc<Config>,
     sent_set: &Arc<Mutex<HashSet<i64>>>,
+    invalid_set: &Arc<Mutex<HashSet<i64>>>,
 ) {
     match db.get_unsent_flags() {
         Ok(flags) => {
             // Send all the flags and wait for all threads to finish
-            let joins = send_flags_with_throttle(&sent_set, &flags, config).await;
+            let joins = send_flags_with_throttle(sent_set, invalid_set, &flags, config).await;
             for join in joins {
                 if let Err(err) = join.await {
                     eprintln!("[ERROR][JOIN] {}", err);
@@ -269,7 +295,12 @@ async fn run<T: Error, U: database::Database<T>>(
     // Update all the sent flags
     let mut hash_set = sent_set.lock().unwrap();
     if let Err(err) = db.set_sent_flags(&mut hash_set) {
-        eprintln!("[ERROR][SET] {}", err);
+        eprintln!("[ERROR][SET][SENT] {}", err);
+    }
+    // Update all the invalid flags
+    let mut hash_set = invalid_set.lock().unwrap();
+    if let Err(err) = db.set_invalid_flags(&mut hash_set) {
+        eprintln!("[ERROR][SET][INVALID] {}", err);
     }
 }
 
@@ -277,13 +308,14 @@ async fn main_loop<T: Error, U: database::Database<T>>(
     db: &mut U,
     config: &Arc<Config>,
     sent_set: &Arc<Mutex<HashSet<i64>>>,
+    invalid_set: &Arc<Mutex<HashSet<i64>>>,
 ) {
     // Interval for checking flags to sent
     let mut interval = interval(Duration::from_secs(config.check_interval as u64));
 
     loop {
         interval.tick().await;
-        run(db, config, &sent_set).await;
+        run(db, config, sent_set, invalid_set).await;
     }
 }
 
@@ -292,6 +324,7 @@ async fn main() {
     let config = config();
     // Set of all the sent flags
     let sent_set: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
+    let invalid_set: Arc<Mutex<HashSet<i64>>> = Arc::new(Mutex::new(HashSet::new()));
     // Configuration to share across threads, only for read
     let arc_config = Arc::new(config.clone());
 
@@ -310,9 +343,9 @@ async fn main() {
 
         // Select the run mode, default to a loop
         if !config.single_run.unwrap_or(false) {
-            main_loop(&mut (*db), &arc_config, &sent_set).await;
+            main_loop(&mut (*db), &arc_config, &sent_set, &invalid_set).await;
         } else {
-            run(&mut (*db), &arc_config, &sent_set).await;
+            run(&mut (*db), &arc_config, &sent_set, &invalid_set).await;
         }
     } else {
         // Database connection, with appropriate functions
@@ -328,9 +361,9 @@ async fn main() {
 
         // Select the run mode, default to a loop
         if !config.single_run.unwrap_or(false) {
-            main_loop(&mut (*db), &arc_config, &sent_set).await;
+            main_loop(&mut (*db), &arc_config, &sent_set, &invalid_set).await;
         } else {
-            run(&mut (*db), &arc_config, &sent_set).await;
+            run(&mut (*db), &arc_config, &sent_set, &invalid_set).await;
         }
     }
 }
