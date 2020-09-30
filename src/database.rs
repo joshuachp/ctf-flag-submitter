@@ -9,8 +9,12 @@ use std::sync::Arc;
 // Crete table flags(id, flag, group_id, status, received_time, sent_time) the
 // received_time/sent_time is set automatically throw a SQL query and is not
 // used by the application but only for debug
-const FLAG_TABLE: &str = "CREATE TABLE IF NOT EXISTS flags 
+const FLAG_TABLE_SQLITE: &str = "CREATE TABLE IF NOT EXISTS flags 
     (id INTEGER PRIMARY KEY, flag TEXT NOT NULL UNIQUE, group_id INT NOT NULL,
+    status INT2 NOT NULL DEFAULT 0 CHECK (status < 4),
+    received_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, sent_time TEXT)";
+const FLAG_TABLE_POSTGRESQL: &str = "CREATE TABLE IF NOT EXISTS flags 
+    (id SERIAL PRIMARY KEY, flag TEXT NOT NULL UNIQUE, group_id INT NOT NULL,
     status INT2 NOT NULL DEFAULT 0 CHECK (status < 4),
     received_time TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, sent_time TEXT)";
 // Get all the flags with status unsent
@@ -40,7 +44,7 @@ impl Database<rusqlite::Error> for Sqlite {
     fn setup(&mut self) -> rusqlite::Result<()> {
         println!("[SETUP] Creating SQLite tables");
         // Create table flag
-        &self.db.execute_batch(FLAG_TABLE)?;
+        &self.db.execute_batch(FLAG_TABLE_SQLITE)?;
         Ok(())
     }
 
@@ -91,7 +95,7 @@ impl Database<postgres::Error> for Postgres {
     fn setup(&mut self) -> Result<(), postgres::Error> {
         println!("[SETUP] Creating SQLite tables");
         // Create table flag
-        &self.db.execute(FLAG_TABLE, &[])?;
+        &self.db.execute(FLAG_TABLE_POSTGRESQL, &[])?;
         Ok(())
     }
 
