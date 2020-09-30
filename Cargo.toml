@@ -1,6 +1,6 @@
 [package]
 name = "flag-submitter"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Joshua Chapman <joshua.samuel.chapman@protonmail.com>"]
 edition = "2018"
 description="Automatic Flag sumbitter for ctf challenges like CTF Forge, with throttle and quota limits."
